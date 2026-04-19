@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "Bash(python -m pytest tests/test_upload.py tests/test_retriever.py -v)",
+      "Bash(python -m pytest tests/test_relations.py tests/test_upload.py tests/test_retriever.py -v)"
+    ]
+  }
+}
