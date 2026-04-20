@@ -15,19 +15,18 @@ from __future__ import annotations
 import json
 import math
 
+import os
+
 import openai
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from models.schemas import AgentPosition, Chunk
-from pipeline.shared.constants import AGENT_STATUS_REVISED, AGENT_STATUS_STABLE
+from pipeline.shared.constants import AGENT_STATUS_REVISED, AGENT_STATUS_STABLE, DEBATE_INIT_MODEL, DEBATE_ROUND_MODEL
 
 # Verbs used to find the most representative sentence in a chunk (fallback)
 _REPRESENTATIVE_VERBS = {"is", "was", "are", "were", "has", "have", "can", "show", "suggest"}
-
-_OPENAI_API_KEY = (
-    "sk-proj-bTINwT5Ubukg9w-YJzMyrO5J3TJgo4hsGna91D5UqY55AQ2GH1HUysTrlmw6tKLM9k047zd1mm"
-    "T3BlbkFJH2L8pz3dWqZqkNgZ6hiIDYLAPhBq7vC1ARdOhg3ugo9qSuU6pxCXwGM6YwvJCnOc668QBqfHgA"
-)
-_DEBATE_MODEL = "o3"
 
 
 def _word_overlap(a: str, b: str) -> float:
@@ -60,7 +59,7 @@ class DebateAgent:
     def __init__(self, agent_id: str, chunk: Chunk) -> None:
         self._agent_id = agent_id
         self._chunk = chunk
-        self._client = openai.OpenAI(api_key=_OPENAI_API_KEY)
+        self._client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
     def generate_initial_position(self) -> AgentPosition:
         """
@@ -79,7 +78,7 @@ class DebateAgent:
 
         try:
             response = self._client.chat.completions.create(
-                model=_DEBATE_MODEL,
+                model=DEBATE_INIT_MODEL,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -160,7 +159,7 @@ class DebateAgent:
 
         try:
             response = self._client.chat.completions.create(
-                model=_DEBATE_MODEL,
+                model=DEBATE_ROUND_MODEL,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": system_prompt},

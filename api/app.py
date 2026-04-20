@@ -48,12 +48,18 @@ def create_app() -> FastAPI:
 
     from api.routes.health import router as health_router
     from api.routes.upload import router as upload_router
+    from api.routes.upload_pdf import router as upload_pdf_router
+    from api.routes.upload_url import router as upload_url_router
     from api.routes.query import router as query_router
+    from api.routes.query_stream import router as query_stream_router
     from api.routes.documents import router as documents_router
 
     app.include_router(health_router)
     app.include_router(upload_router)
+    app.include_router(upload_pdf_router)
+    app.include_router(upload_url_router)
     app.include_router(query_router)
+    app.include_router(query_stream_router)
     app.include_router(documents_router)
 
     return app

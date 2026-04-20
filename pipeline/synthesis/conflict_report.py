@@ -22,12 +22,77 @@ from pipeline.shared.constants import (
     CONFLICT_NOISE,
     CONFLICT_OUTLIER,
     CONFLICT_OVERSIMPLIFICATION,
+    DEBATE_SUPPORT_SIMILARITY_THRESHOLD,
     DECISION_CASE_AMBIGUITY,
     DECISION_CASE_STRONG_WINNER,
     DECISION_CASE_UNRESOLVED,
+    NLI_CONTRADICTION,
     SCOPE_QUALIFIERS,
 )
-from pipeline.shared.types import SupportMap
+from pipeline.shared.helpers import cosine_similarity
+from pipeline.shared.types import EmbedderProtocol, SupportMap
+
+
+def _merge_semantic_clusters(
+    cluster_map: dict[str, list[AgentPosition]],
+    embedder: EmbedderProtocol,
+    relation_pairs: list[RelationPair],
+) -> dict[str, list[AgentPosition]]:
+    """
+    Merge clusters whose representative texts are semantically equivalent
+    (cosine >= DEBATE_SUPPORT_SIMILARITY_THRESHOLD) using Union-Find.
+
+    Two clusters are never merged if:
+    - Either carries a scope qualifier (they represent legitimately distinct scoped answers), OR
+    - Any chunk pair across the two clusters is an NLI contradiction (they are competing claims).
+    """
+    texts = list(cluster_map.keys())
+    if len(texts) <= 1:
+        return cluster_map
+
+    # Build a set of contradiction chunk-id pairs for fast lookup.
+    contradiction_pairs: set[tuple[str, str]] = set()
+    for rp in relation_pairs:
+        if rp.nli_label == NLI_CONTRADICTION:
+            a, b = rp.chunk_a_id, rp.chunk_b_id
+            contradiction_pairs.add((a, b) if a <= b else (b, a))
+
+    def _clusters_contradict(ta: str, tb: str) -> bool:
+        ids_a = {p.chunk_id for p in cluster_map[ta]}
+        ids_b = {p.chunk_id for p in cluster_map[tb]}
+        for ca in ids_a:
+            for cb in ids_b:
+                key = (ca, cb) if ca <= cb else (cb, ca)
+                if key in contradiction_pairs:
+                    return True
+        return False
+
+    vecs = embedder.encode_batch(texts)
+    vec_map: dict[str, list[float]] = dict(zip(texts, vecs))
+
+    parent = {t: t for t in texts}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i, ta in enumerate(texts):
+        for j in range(i + 1, len(texts)):
+            tb = texts[j]
+            if _has_scope_qualifier(ta) or _has_scope_qualifier(tb):
+                continue
+            if _clusters_contradict(ta, tb):
+                continue
+            if cosine_similarity(vec_map[ta], vec_map[tb]) >= DEBATE_SUPPORT_SIMILARITY_THRESHOLD:
+                parent[find(ta)] = find(tb)
+
+    merged: dict[str, list[AgentPosition]] = {}
+    for text in texts:
+        root = find(text)
+        merged.setdefault(root, []).extend(cluster_map[text])
+    return merged
 
 
 def _has_scope_qualifier(text: str) -> bool:
@@ -157,6 +222,7 @@ def generate_conflict_reports(
     isolated_agent_ids: list[str],
     chunks: list[Chunk],
     relation_pairs: list[RelationPair],
+    embedder: EmbedderProtocol | None = None,
 ) -> list[ConflictReport]:
     """
     Produce one ConflictReport per claim cluster.
@@ -168,10 +234,14 @@ def generate_conflict_reports(
     chunk_map: dict[str, Chunk] = {c.id: c for c in chunks}
 
     # ── Step 1: Build position clusters ──────────────────────────────────────
-    # Group by identical position_text
+    # Group by identical position_text, then merge semantically equivalent
+    # clusters when an embedder is available.
     cluster_map: dict[str, list[AgentPosition]] = {}
     for pos in positions:
         cluster_map.setdefault(pos.position_text, []).append(pos)
+
+    if embedder and len(cluster_map) > 1:
+        cluster_map = _merge_semantic_clusters(cluster_map, embedder, relation_pairs)
 
     # Handle scope-difference pairs from relation_pairs: merge clusters whose
     # chunk pairs have is_scope_difference=True into ambiguity groups.

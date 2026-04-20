@@ -59,7 +59,7 @@ class QueryNormalizer:
         entities = self._extract_entities(raw)
         property_ = self._extract_property(raw.lower())
         intent = self._extract_intent(raw.lower())
-        vector = self._embedder.encode(normalized)
+        vector = self._embedder.encode(raw)
         return Query(
             raw=raw,
             normalized=normalized,

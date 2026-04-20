@@ -20,7 +20,7 @@ from pipeline.relations.ner import NERExtractor, extract_all
 from pipeline.relations.nli import NLIClassifier, build_relation_pairs
 from pipeline.relations.query_relevance import compute_query_relevance
 from pipeline.selection.dpp_selector import DPPSelector
-from pipeline.shared.constants import DECISION_CASE_UNRESOLVED, SCOPE_QUALIFIERS, TOP_K_DEFAULT
+from pipeline.shared.constants import DECISION_CASE_UNRESOLVED, DPP_MIN_RELEVANCE_THRESHOLD, SCOPE_QUALIFIERS, TOP_K_DEFAULT
 from pipeline.shared.types import EmbedderProtocol, VectorStoreProtocol
 from pipeline.synthesis.answer_synthesizer import AnswerSynthesizer
 from pipeline.synthesis.conflict_report import generate_conflict_reports
@@ -54,8 +54,8 @@ class Pipeline:
         self._retriever = Retriever(self._store)
         self._ner = NERExtractor()
         self._nli = NLIClassifier()
-        self._dpp = DPPSelector()
-        self._debate = DebateOrchestrator()
+        self._dpp = DPPSelector(min_relevance=DPP_MIN_RELEVANCE_THRESHOLD)
+        self._debate = DebateOrchestrator(embedder=self._embedder)
         self._synthesizer = AnswerSynthesizer()
 
     # ------------------------------------------------------------------
@@ -120,7 +120,7 @@ class Pipeline:
     # Query-time
     # ------------------------------------------------------------------
 
-    def query(self, raw_query: str) -> SynthesisResult:
+    def query(self, raw_query: str, emit=None) -> SynthesisResult:
         """
         Full query pipeline:
           normalize → retrieve → relate (×4) → DPP select
@@ -128,10 +128,26 @@ class Pipeline:
 
         Returns a SynthesisResult with a conflict-aware natural language answer.
         """
+        def _emit(stage: str, data: dict) -> None:
+            if emit:
+                emit(stage, data)
+
         query_obj = self._normalizer.normalize(raw_query)
+        _emit("normalize", {
+            "normalized": query_obj.normalized,
+            "entities": query_obj.entities[:8],
+            "intent": query_obj.intent,
+            "property": query_obj.property,
+        })
+
         chunks = self._retriever.retrieve(query_obj, top_k=self._top_k)
+        _emit("retrieve", {
+            "count": len(chunks),
+            "chunks": [{"id": c.id, "excerpt": c.text[:80], "doc_id": c.source_doc_id} for c in chunks[:6]],
+        })
 
         if not chunks:
+            _emit("complete_early", {"reason": "no_chunks"})
             return SynthesisResult(
                 answer="No relevant evidence found.",
                 decision_case=DECISION_CASE_UNRESOLVED,
@@ -147,15 +163,25 @@ class Pipeline:
         relation_pairs = build_relation_pairs(
             chunks, self._nli, SCOPE_QUALIFIERS, ner_results
         )
+        _emit("relations", {
+            "pair_count": len(relation_pairs),
+            "contradiction_count": sum(1 for p in relation_pairs if p.nli_label == "contradiction"),
+            "scope_diff_count": sum(1 for p in relation_pairs if p.is_scope_difference),
+        })
 
         # Stage 5: DPP selection
         dpp_result = self._dpp.select(
             chunks, relation_pairs, relevance_scores, similarity_matrix
         )
         selected_chunks = self._store.get_many(dpp_result.selected_ids)
+        _emit("dpp", {
+            "selected_count": len(dpp_result.selected_ids),
+            "dropped_count": len(dpp_result.dropped_ids),
+            "drop_reasons": dpp_result.drop_reasons,
+        })
 
         # Stages 6-7: Debate
-        debate_result = self._debate.run(selected_chunks)
+        debate_result = self._debate.run(selected_chunks, emit=emit)
         self._last_debate_result = debate_result
 
         # Stage 8: Conflict classification
@@ -165,7 +191,17 @@ class Pipeline:
             isolated_agent_ids=debate_result.isolated_agent_ids,
             chunks=selected_chunks,
             relation_pairs=relation_pairs,
+            embedder=self._embedder,
         )
+
+        _emit("conflict", {
+            "report_count": len(conflict_reports),
+            "reports": [
+                {"conflict_type": r.conflict_type, "chunk_count": len(r.chunk_ids),
+                 "evidence_strength": r.evidence_strength, "has_scope_qualifier": r.has_scope_qualifier}
+                for r in conflict_reports
+            ],
+        })
 
         # Stage 9: Synthesize
         return self._synthesizer.synthesize(

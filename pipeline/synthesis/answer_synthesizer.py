@@ -17,7 +17,12 @@ from __future__ import annotations
 import json
 import textwrap
 
+import os
+
 import openai
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from models.schemas import AgentPosition, Chunk, ConflictReport, SynthesisResult
 from pipeline.shared.constants import (
@@ -29,14 +34,9 @@ from pipeline.shared.constants import (
     DECISION_CASE_STRONG_WINNER,
     DECISION_CASE_UNRESOLVED,
     SCOPE_QUALIFIERS,
+    SYNTHESIS_MODEL as _SYNTHESIS_MODEL,
 )
 from pipeline.synthesis.conflict_report import determine_decision_case
-
-_OPENAI_API_KEY = (
-    "sk-proj-bTINwT5Ubukg9w-YJzMyrO5J3TJgo4hsGna91D5UqY55AQ2GH1HUysTrlmw6tKLM9k047zd1mm"
-    "T3BlbkFJH2L8pz3dWqZqkNgZ6hiIDYLAPhBq7vC1ARdOhg3ugo9qSuU6pxCXwGM6YwvJCnOc668QBqfHgA"
-)
-_SYNTHESIS_MODEL = "o3"
 
 
 def _get_qualifier(text: str) -> str:
@@ -56,7 +56,7 @@ class AnswerSynthesizer:
     """Produces a conflict-aware natural language answer from pipeline outputs."""
 
     def __init__(self) -> None:
-        self._client = openai.OpenAI(api_key=_OPENAI_API_KEY)
+        self._client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
     def synthesize(
         self,
@@ -71,6 +71,8 @@ class AnswerSynthesizer:
         """
         decision_case = determine_decision_case(reports)
 
+        valid_chunk_ids = {c.id for c in chunks}
+
         try:
             if decision_case == DECISION_CASE_AMBIGUITY:
                 answer, sources, tags = self._case_1_ambiguity(reports, chunks)
@@ -81,6 +83,9 @@ class AnswerSynthesizer:
         except Exception:
             # Fallback: template-based answer
             answer, sources, tags = self._fallback_answer(reports, decision_case)
+
+        # Filter out any hallucinated chunk IDs the LLM may have invented
+        sources = [s for s in sources if s in valid_chunk_ids]
 
         return self._build_synthesis_result(answer, decision_case, reports, sources, tags)
 
@@ -244,9 +249,10 @@ class AnswerSynthesizer:
             "- If the surviving claims GENUINELY conflict (different facts, not just "
             "different wording), state that the evidence is inconclusive and briefly "
             "summarise what the competing positions are.\n"
-            '\n\nRespond JSON only:\n'
-            '{"answer": "your answer here", '
-            '"sources_cited": ["chunk_id", ...], "conflict_handling_tags": ["unresolved_conflict"]}'
+            f'\n\nRespond JSON only:\n'
+            f'{{"answer": "your answer here", '
+            f'"sources_cited": {json.dumps(all_ids)}, '
+            f'"conflict_handling_tags": ["unresolved_conflict"]}}'
         )
 
         fallback = (
@@ -286,8 +292,9 @@ class AnswerSynthesizer:
             tags = data.get("conflict_handling_tags", [])
             if answer:
                 return answer, sources, tags
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Synthesis LLM call failed: %s", exc)
 
         return fallback_answer
 

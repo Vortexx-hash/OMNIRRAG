@@ -37,6 +37,7 @@ from models.schemas import Chunk, DPPResult, RelationPair
 from pipeline.shared.constants import (
     DPP_BETA_DEFAULT,
     DPP_GAMMA_DEFAULT,
+    DPP_MIN_RELEVANCE_THRESHOLD,
     DROP_REASON_IRRELEVANT,
     DROP_REASON_REDUNDANT,
     NLI_CONTRADICTION,
@@ -68,11 +69,13 @@ class DPPSelector:
         gamma: float = DPP_GAMMA_DEFAULT,
         redundancy_threshold: float = SIMILARITY_REDUNDANCY_THRESHOLD,
         max_chunks: int | None = None,
+        min_relevance: float = 0.0,
     ) -> None:
         self._beta = beta
         self._gamma = gamma
         self._redundancy_threshold = redundancy_threshold
         self._max_chunks = max_chunks
+        self._min_relevance = min_relevance
 
     # ------------------------------------------------------------------
     # Public interface
@@ -112,7 +115,13 @@ class DPPSelector:
                 seen.add(seed.id)
 
         # --- Phase 2: greedy fill ---
-        remaining = [c for c in chunks if c.id not in seen]
+        # Candidates must meet the minimum relevance floor (conflict cluster seeds
+        # are already committed in phase 1 and bypass this gate).
+        remaining = [
+            c for c in chunks
+            if c.id not in seen
+            and relevance_scores.get(c.id, 0.0) >= self._min_relevance
+        ]
 
         while len(selected_ids) < max_k and remaining:
             current_subset = [chunk_map[cid] for cid in selected_ids]

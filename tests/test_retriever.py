@@ -41,7 +41,7 @@ def test_normalizer_encodes_query_vector():
 # --- Retriever ---
 
 def test_retriever_returns_top_k_by_similarity():
-    store = VectorStore()
+    store = VectorStore(path=None)
     dim = 5
     for i in range(dim):
         v = [1.0 if j == i else 0.0 for j in range(dim)]
@@ -55,7 +55,7 @@ def test_retriever_returns_top_k_by_similarity():
 
 
 def test_retriever_excludes_low_similarity_chunks():
-    store = VectorStore()
+    store = VectorStore(path=None)
     store.upsert(make_chunk("high", "highly relevant chunk", [1.0, 0.0]))
     store.upsert(make_chunk("low",  "orthogonal chunk",      [0.0, 1.0]))
     retriever = Retriever(store)

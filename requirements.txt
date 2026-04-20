@@ -1,0 +1,22 @@
+# ── Web framework ────────────────────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9      # required for FastAPI file/form uploads
+
+# ── Data validation ──────────────────────────────────────────────────────────
+pydantic>=2.7.0
+
+# ── Embeddings + NLI (sentence-transformers pulls torch automatically) ───────
+sentence-transformers>=3.0.0
+
+# ── LLM calls (debate agents + answer synthesizer) ───────────────────────────
+openai>=1.30.0
+python-dotenv>=1.0.0
+
+# ── PDF parsing ──────────────────────────────────────────────────────────────
+pypdf>=4.0.0
+
+# ── Web page fetching + HTML extraction (URL upload) ─────────────────────────
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0

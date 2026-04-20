@@ -9,6 +9,7 @@ interface IngestionFlowProps {
   status: 'idle' | 'loading' | 'success' | 'error'
   result?: UploadResponse
   inputText?: string
+  fileName?: string
   error?: string
 }
 
@@ -25,7 +26,9 @@ function estimateChunkPreviews(text: string, count: number): string[] {
   )
 }
 
-export function IngestionFlow({ status, result, inputText = '', error }: IngestionFlowProps) {
+export function IngestionFlow({ status, result, inputText = '', fileName, error }: IngestionFlowProps) {
+  const isUrl = !!fileName && fileName.startsWith('http')
+  const isPdf = !!fileName && !inputText && !isUrl
   const [phase, setPhase] = useState<Phase>('idle')
   const [visibleChunks, setVisibleChunks] = useState<number>(0)
   const [visibleOrbs, setVisibleOrbs] = useState<number>(0)
@@ -162,8 +165,19 @@ export function IngestionFlow({ status, result, inputText = '', error }: Ingesti
                   <Cpu size={20} className="text-violet-400" />
                 </div>
               </div>
-              <p className="text-violet-300 text-sm font-medium">Processing document…</p>
-              <p className="text-slate-500 text-xs">Parsing, chunking, embedding</p>
+              <p className="text-violet-300 text-sm font-medium">
+                {isPdf ? 'Parsing PDF…' : isUrl ? 'Fetching web page…' : 'Processing document…'}
+              </p>
+              <p className="text-slate-500 text-xs">
+                {isPdf ? 'Extracting text · chunking · embedding'
+                  : isUrl ? 'Scraping · extracting text · chunking · embedding'
+                  : 'Parsing, chunking, embedding'}
+              </p>
+              {(isPdf || isUrl) && fileName && (
+                <p className="text-[11px] font-mono text-slate-600 truncate max-w-xs">
+                  {isUrl ? new URL(fileName).hostname : fileName}
+                </p>
+              )}
             </motion.div>
           )}
 
@@ -176,7 +190,9 @@ export function IngestionFlow({ status, result, inputText = '', error }: Ingesti
             >
               <p className="text-xs text-violet-400 font-medium mb-3 flex items-center gap-2">
                 <Scissors size={12} />
-                Chunking document into {result?.chunks_stored} segments
+                {isPdf ? `Chunking "${fileName}" into`
+                  : isUrl ? `Chunking page content into`
+                  : 'Chunking document into'} {result?.chunks_stored} segments
               </p>
               <div className="grid grid-cols-2 gap-2">
                 {chunkPreviews.map((preview, i) => (

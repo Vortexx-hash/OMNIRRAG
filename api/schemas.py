@@ -136,7 +136,7 @@ class DocumentRecord(BaseModel):
     source_type: str
     chunks_stored: int
     chunk_ids: list[str]
-    uploaded_at: str
+    uploaded_at: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

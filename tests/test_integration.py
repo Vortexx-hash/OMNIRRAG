@@ -101,7 +101,7 @@ def _chunk(
 
 def _pipeline_with(*chunks: Chunk) -> Pipeline:
     """Return a Pipeline whose store is pre-seeded with the given chunks."""
-    store = VectorStore()
+    store = VectorStore(path=None)
     for c in chunks:
         store.upsert(c)
     return Pipeline(
@@ -124,7 +124,7 @@ class TestUploadPipeline:
     """Verify upload-time credibility assignment and storage."""
 
     def test_government_source_assigns_tier1(self):
-        store = VectorStore()
+        store = VectorStore(path=None)
         p = Pipeline(embedder=FakeEmbedder(), vector_store=store)
         ids = p.upload(
             "Sucre is the constitutional capital of Bolivia.",
@@ -137,7 +137,7 @@ class TestUploadPipeline:
         assert stored.credibility_score >= 0.90
 
     def test_unverified_source_assigns_tier4(self):
-        store = VectorStore()
+        store = VectorStore(path=None)
         p = Pipeline(embedder=FakeEmbedder(), vector_store=store)
         ids = p.upload(
             "Some unverified claim about a capital city.",
@@ -150,7 +150,7 @@ class TestUploadPipeline:
         assert stored.credibility_score <= 0.39
 
     def test_academic_source_assigns_tier2(self):
-        store = VectorStore()
+        store = VectorStore(path=None)
         p = Pipeline(embedder=FakeEmbedder(), vector_store=store)
         ids = p.upload(
             "Metformin is recommended as first-line therapy for type 2 diabetes.",
@@ -164,7 +164,7 @@ class TestUploadPipeline:
 
     def test_empty_store_query_returns_unresolved_no_llm_needed(self):
         """Pipeline short-circuits with no-evidence answer when the store is empty."""
-        p = Pipeline(embedder=FakeEmbedder(), vector_store=VectorStore())
+        p = Pipeline(embedder=FakeEmbedder(), vector_store=VectorStore(path=None))
         result = p.query("What is the capital of Bolivia?")
         assert result.decision_case == DECISION_CASE_UNRESOLVED
         assert result.answer == "No relevant evidence found."
@@ -407,26 +407,27 @@ class TestStrongWinnerScenario:
 # 4. Unresolved conflict scenario — Case 3
 # ===========================================================================
 
-_NUCLEAR_POS = "Nuclear energy is the safest and most reliable source of electricity"
-_RENEWABLE_POS = "Renewable energy from wind and solar is the safest electricity generation method"
+_NUCLEAR_POS = "Fission plants deliver reliable baseload generation around the clock"
+_RENEWABLE_POS = "Photovoltaic panels convert sunlight without carbon dioxide"
 
 
 class TestUnresolvedConflictScenario:
     """
     Energy debate: two equally credible claims, no scope qualifiers.
 
-    Neither agent is isolated (word overlap ≥ 0.2 from shared words like
-    "safest", "electricity").  Both clusters survive as CONFLICT_AMBIGUITY
-    with has_scope_qualifier=False → determine_decision_case returns Case 3.
+    Position texts use disjoint vocabulary so FakeEmbedder produces near-zero
+    cosine similarity — preventing spurious cluster merging in the conflict
+    report.  Both clusters survive as CONFLICT_AMBIGUITY with
+    has_scope_qualifier=False → determine_decision_case returns Case 3.
     """
 
     def _chunks(self):
         return (
             _chunk("nuclear1",
-                   "Nuclear energy is the safest and most reliable source of electricity",
+                   "Fission plants deliver reliable baseload generation around the clock",
                    tier=2, score=0.80),
             _chunk("renewable1",
-                   "Renewable energy from wind and solar is the safest electricity generation method",
+                   "Photovoltaic panels convert sunlight without carbon dioxide",
                    tier=2, score=0.80),
         )
 

@@ -7,6 +7,9 @@ Manages the full multi-round debate lifecycle:
 3. Run round loop: broadcast all positions, collect responses, update support map.
 4. Check early stop after each round.
 5. Return DebateResult when stable or MAX_DEBATE_ROUNDS reached.
+
+An optional `emit` callable can be passed to `run()` to receive live events
+(used by the SSE streaming endpoint for the frontend visualiser).
 """
 
 from __future__ import annotations
@@ -14,18 +17,47 @@ from __future__ import annotations
 from models.schemas import AgentPosition, Chunk, DebateResult
 from pipeline.debate.agent_bank import DebateAgent, _word_overlap
 from pipeline.debate.early_stop import should_stop
-from pipeline.shared.constants import AGENT_STATUS_ISOLATED, MAX_DEBATE_ROUNDS
-from pipeline.shared.types import AgentID, SupportMap
+from pipeline.shared.constants import AGENT_STATUS_ISOLATED, DEBATE_SUPPORT_SIMILARITY_THRESHOLD, MAX_DEBATE_ROUNDS
+from pipeline.shared.helpers import cosine_similarity
+from pipeline.shared.types import AgentID, EmbedderProtocol, SupportMap
 
 
 class DebateOrchestrator:
     """Runs the multi-agent debate and returns a DebateResult."""
 
-    def run(self, chunks: list[Chunk]) -> DebateResult:
+    def __init__(self, embedder: EmbedderProtocol | None = None) -> None:
+        self._embedder = embedder
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _pos_to_dict(p: AgentPosition) -> dict:
+        return {
+            "agent_id": p.agent_id,
+            "chunk_id": p.chunk_id,
+            "position_text": p.position_text[:220],
+            "confidence": p.confidence,
+            "status": p.status,
+            "reasoning": (p.reasoning or "")[:160],
+        }
+
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
+
+    def run(self, chunks: list[Chunk], emit=None) -> DebateResult:
         """
         Execute the full debate for the given chunks.
         Returns final positions, support map, isolated agent IDs, and round count.
+
+        emit(event_type: str, data: dict) is called at key lifecycle points when provided.
         """
+        def _emit(event_type: str, data: dict) -> None:
+            if emit:
+                emit(event_type, data)
+
         if not chunks:
             return DebateResult(
                 final_positions=[],
@@ -35,7 +67,29 @@ class DebateOrchestrator:
             )
 
         agents = self._instantiate_agents(chunks)
+
+        _emit("debate_init", {
+            "agent_count": len(agents),
+            "agents": [
+                {
+                    "agent_id": f"agent_{c.id}",
+                    "chunk_id": c.id,
+                    "excerpt": c.text[:100],
+                    "doc_id": c.source_doc_id,
+                }
+                for c in chunks
+            ],
+        })
+
         positions = self._collect_initial_positions(agents)
+        _emit("debate_positions", {
+            "round": 0,
+            "label": "Initial positions",
+            "positions": [self._pos_to_dict(p) for p in positions],
+            "support_map": {},
+            "isolated_ids": [],
+        })
+
         agent_ids = [a._agent_id for a in agents]
         isolated_ids: list[str] = []
         rounds = 0
@@ -56,9 +110,24 @@ class DebateOrchestrator:
             positions = self._run_round(agents, positions)
             rounds += 1
 
+            round_support = self._build_support_map(positions)
+            round_isolated = self._identify_isolated(round_support, agent_ids)
+            _emit("debate_round", {
+                "round": rounds,
+                "label": f"Round {rounds}",
+                "positions": [self._pos_to_dict(p) for p in positions],
+                "support_map": {k[:120]: v for k, v in round_support.items()},
+                "isolated_ids": round_isolated,
+            })
+
         # Final pass: recompute support map and mark isolated agents in position objects
         support_map = self._build_support_map(positions)
         isolated_ids = self._identify_isolated(support_map, agent_ids)
+
+        _emit("debate_end", {
+            "rounds_completed": rounds,
+            "isolated_agent_ids": isolated_ids,
+        })
 
         final_positions: list[AgentPosition] = []
         for p in positions:
@@ -109,24 +178,35 @@ class DebateOrchestrator:
     ) -> SupportMap:
         """
         Build claim_text → [agent_ids] from current positions.
-        Agents whose position_text matches (or endorses) a claim are counted as supporters.
 
-        Duplicate position_texts are grouped; cross-overlap above threshold adds further support.
+        When an embedder is available, cross-support is determined by cosine
+        similarity of position embeddings (threshold DEBATE_SUPPORT_SIMILARITY_THRESHOLD).
+        Falls back to lexical Jaccard overlap when no embedder is present.
         """
-        # Collect all agents per unique text first (self-support)
         text_to_agents: dict[str, list[str]] = {}
         for p in positions:
             text_to_agents.setdefault(p.position_text, []).append(p.agent_id)
 
+        # Build similarity check — batch-encode unique texts when embedder present.
+        unique_texts = list(text_to_agents.keys())
+        if self._embedder and len(unique_texts) > 1:
+            vecs = self._embedder.encode_batch(unique_texts)
+            vec_map: dict[str, list[float]] = dict(zip(unique_texts, vecs))
+
+            def _similar(a: str, b: str) -> bool:
+                return cosine_similarity(vec_map[a], vec_map[b]) >= DEBATE_SUPPORT_SIMILARITY_THRESHOLD
+        else:
+            def _similar(a: str, b: str) -> bool:
+                return _word_overlap(a, b) >= 0.2
+
         support_map: SupportMap = {}
         for p in positions:
             if p.position_text in support_map:
-                # Already computed for this text (duplicate position_text)
                 continue
-            supporters = list(text_to_agents.get(p.position_text, []))  # same text = self-support
+            supporters = list(text_to_agents.get(p.position_text, []))
             for other in positions:
                 if other.agent_id not in supporters and other.position_text != p.position_text:
-                    if _word_overlap(p.position_text, other.position_text) >= 0.2:
+                    if _similar(p.position_text, other.position_text):
                         supporters.append(other.agent_id)
             support_map[p.position_text] = supporters
 
@@ -135,13 +215,7 @@ class DebateOrchestrator:
     def _identify_isolated(
         self, support_map: SupportMap, agent_ids: list[AgentID]
     ) -> list[AgentID]:
-        """
-        Return agent IDs that have zero cross-support from any other agent.
-
-        An agent is isolated if it does not appear in any support_map entry
-        that contains at least one other agent (i.e., it has no cross-support).
-        """
-        # A single agent has no peers to provide cross-support; it is not isolated.
+        """Return agent IDs that have zero cross-support from any other agent."""
         if len(agent_ids) <= 1:
             return []
 

@@ -84,7 +84,7 @@ def test_embedder_batch_matches_single_encode():
 # --- VectorStore ---
 
 def test_vector_store_upsert_then_query_returns_chunk():
-    store = VectorStore()
+    store = VectorStore(path=None)
     chunk = make_chunk("c1", "Bolivia is a landlocked country", [1.0, 0.0, 0.0])
     store.upsert(chunk)
     results = store.query([1.0, 0.0, 0.0], top_k=1)
@@ -93,7 +93,7 @@ def test_vector_store_upsert_then_query_returns_chunk():
 
 
 def test_vector_store_query_top_k_ordering():
-    store = VectorStore()
+    store = VectorStore(path=None)
     # Vectors are already unit-length; cosine sim with [1,0,0] is the first component
     store.upsert(make_chunk("c_high", "high similarity", [1.0, 0.0, 0.0]))
     store.upsert(make_chunk("c_mid",  "mid similarity",  [0.8, 0.6, 0.0]))
@@ -105,7 +105,7 @@ def test_vector_store_query_top_k_ordering():
 
 
 def test_vector_store_get_by_id():
-    store = VectorStore()
+    store = VectorStore(path=None)
     chunk = make_chunk("c42", "some text content", [0.5, 0.5, 0.0])
     store.upsert(chunk)
     retrieved = store.get("c42")
@@ -114,6 +114,6 @@ def test_vector_store_get_by_id():
 
 
 def test_vector_store_get_missing_raises_key_error():
-    store = VectorStore()
+    store = VectorStore(path=None)
     with pytest.raises(KeyError):
         store.get("nonexistent_id")
